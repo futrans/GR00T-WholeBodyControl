@@ -269,6 +269,9 @@ def main(config: OmegaConf):
         args_cli.kit_args = (
             "--/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error"
         )
+        extra_kit_args = os.environ.get("GR00T_EXTRA_KIT_ARGS", "").strip()
+        if extra_kit_args:
+            args_cli.kit_args = f"{args_cli.kit_args} {extra_kit_args}"
 
         # AppLauncher can't handle multiple processes creating it at the same time so we need a lock
         _lock_path = "/tmp/isaaclab_app_launcher.lock"

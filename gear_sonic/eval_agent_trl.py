@@ -239,6 +239,9 @@ def main(override_config: omegaconf.OmegaConf):
             args_cli.kit_args = base_kit_args + " --no-window"
         else:
             args_cli.kit_args = base_kit_args + f" --/renderer/activeGpu={render_gpu_idx}"
+        extra_kit_args = os.environ.get("GR00T_EXTRA_KIT_ARGS", "").strip()
+        if extra_kit_args:
+            args_cli.kit_args = f"{args_cli.kit_args} {extra_kit_args}"
 
         _lock_path = "/tmp/isaaclab_app_launcher.lock"  # noqa: S108
         with filelock.FileLock(_lock_path):
