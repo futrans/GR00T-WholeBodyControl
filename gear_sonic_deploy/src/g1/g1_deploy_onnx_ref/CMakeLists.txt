@@ -177,6 +177,7 @@ set(EXE_INCLUDES
   ${CMAKE_CURRENT_SOURCE_DIR}/include/
   ${ZMQ_INCLUDE_DIR}
   ${EIGEN3_INCLUDE_DIR}
+  ${MSGPACK_INCLUDE_DIRS}
 )
 
 
@@ -199,7 +200,7 @@ set(EXE_LIBS
 
 # build the main executable:
 add_executable(${EXECUTABLE_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/g1_deploy_onnx_ref.cpp)
-target_include_directories(${EXECUTABLE_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include/ ${PROJECT_SOURCE_DIR}/src)
+target_include_directories(${EXECUTABLE_NAME} PUBLIC ${EXE_INCLUDES} ${PROJECT_SOURCE_DIR}/src)
 
 target_link_directories(${EXECUTABLE_NAME} PRIVATE ${CUDA_LINK_DIRS})
 target_link_libraries(

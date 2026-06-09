@@ -218,4 +218,7 @@ models/
 
 # Downloaded from HuggingFace (hf download)
 sample_data/
+
+# Local native deployment dependencies (TensorRT/ONNX Runtime/header-only deps)
+gear_sonic_deploy/local_deps/
 sonic_release/
