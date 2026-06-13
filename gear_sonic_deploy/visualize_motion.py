@@ -2,6 +2,7 @@ import argparse
 import csv
 import os
 import time
+from pathlib import Path
 from scipy.spatial.transform import Rotation as R
 
 import mujoco
@@ -13,6 +14,9 @@ from lxml import etree
 import zmq
 import threading
 import msgpack
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+G1_ASSET_DIR = SCRIPT_DIR / "g1"
 
 def key_call_back(keycode):
     global \
@@ -175,13 +179,12 @@ def main(args) -> None:
         for child in elem:
             replace_attribute(child, attribute, value)
 
-    main_scene = etree.parse('g1/scene_empty.xml')
-    robot1 = etree.parse('g1/g1_29dof_old.xml')
+    main_scene = etree.parse(str(G1_ASSET_DIR / "scene_empty.xml"))
+    robot1 = etree.parse(str(G1_ASSET_DIR / "g1_29dof_old.xml"))
     robot_asset = robot1.find('asset')
     scene_asset = main_scene.find('asset')
     for mesh in robot_asset.findall('mesh'):
-        # INSERT_YOUR_CODE
-        mesh.set("file", os.path.join("g1","meshes", mesh.get('file')))
+        mesh.set("file", str(G1_ASSET_DIR / "meshes" / mesh.get('file')))
         scene_asset.append(mesh)
     
     robot_default = robot1.find('default')
@@ -194,14 +197,14 @@ def main(args) -> None:
     prepend_names(robot1_body, "robot1_")
     scene_worldbody.append(robot1_body)
 
-    robot2 = etree.parse('g1/g1_29dof_old.xml')
+    robot2 = etree.parse(str(G1_ASSET_DIR / "g1_29dof_old.xml"))
     robot2_body = robot2.find('worldbody').find('body')
     prepend_names(robot2_body, "robot2_")
     replace_attribute(robot2_body, "rgba", "0.5 0.1 0.1 1")
     robot2_body.set("pos", "0 -1 -10")
     scene_worldbody.append(robot2_body)
 
-    robot3 = etree.parse('g1/g1_29dof_old.xml')
+    robot3 = etree.parse(str(G1_ASSET_DIR / "g1_29dof_old.xml"))
     robot3_body = robot3.find('worldbody').find('body')
     prepend_names(robot3_body, "robot3_")
     replace_attribute(robot3_body, "rgba", "0.1 0.5 0.1 0.2")
@@ -209,7 +212,7 @@ def main(args) -> None:
     scene_worldbody.append(robot3_body)
 
     # Robot 4: temperature visualization robot (white transparent, offset 3m to the right)
-    robot4 = etree.parse('g1/g1_29dof_old.xml')
+    robot4 = etree.parse(str(G1_ASSET_DIR / "g1_29dof_old.xml"))
     robot4_body = robot4.find('worldbody').find('body')
     prepend_names(robot4_body, "robot4_")
     replace_attribute(robot4_body, "rgba", "0.8 0.8 0.8 0.1")
