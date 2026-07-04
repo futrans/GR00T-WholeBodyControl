@@ -15,14 +15,20 @@ Usage:
 import argparse
 import copy
 import os
+import sys
+from pathlib import Path
 
 import pytorch_lightning as pl
-import torch
 from hydra.utils import instantiate
-from omegaconf import DictConfig, OmegaConf, open_dict
-from torch.utils.data import DataLoader
+from omegaconf import OmegaConf, open_dict
 
-from motionbricks.data.synthetic_dataset import SyntheticMotionDataset, collate_batch
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from motionbricks.data.training_dataset_factory import (
+    build_motion_training_dataloader,
+    build_motion_training_dataset,
+)
 from motionbricks.helper.pl_util import load_motion_rep
 
 
@@ -74,30 +80,35 @@ def main():
                         help="Batch size")
     parser.add_argument("--num_samples", type=int, default=500,
                         help="Number of synthetic samples in dataset")
+    parser.add_argument("--dataset_cache", type=str, default=None,
+                        help="MotionBricks packed cache root")
+    parser.add_argument("--num_workers", type=int, default=2,
+                        help="DataLoader worker count")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     pl.seed_everything(args.seed)
     conf, version_dir = load_config(args.result_dir, args.max_steps)
+    if args.dataset_cache:
+        with open_dict(conf):
+            conf.motion_rep.stats.folder = os.path.join(args.dataset_cache, "stats", "motion")
 
     # instantiate skeleton and motion representation
     motion_rep = load_motion_rep(conf)
     feat_dim = len(motion_rep.indices['all'])
 
-    # create synthetic dataset
-    dataset = SyntheticMotionDataset(
+    dataset = build_motion_training_dataset(
         feat_dim=feat_dim,
+        dataset_cache=args.dataset_cache,
         num_samples=args.num_samples,
         min_frames=80,
         max_frames=200,
     )
-    dataloader = DataLoader(
+    dataloader = build_motion_training_dataloader(
         dataset,
         batch_size=args.batch_size,
+        num_workers=args.num_workers,
         shuffle=True,
-        num_workers=2,
-        collate_fn=collate_batch,
-        persistent_workers=True,
     )
 
     # instantiate networks and model
@@ -150,7 +161,10 @@ def main():
     print(f"Starting pose model training for {args.max_steps} steps...")
     print(f"  Feature dim: {feat_dim}")
     print(f"  Batch size: {args.batch_size}")
-    print(f"  Dataset size: {args.num_samples}")
+    print(f"  Dataset type: {'cached' if args.dataset_cache else 'synthetic'}")
+    if args.dataset_cache:
+        print(f"  Dataset cache: {args.dataset_cache}")
+    print(f"  Dataset size: {len(dataset)}")
     print(f"  VQVAE loaded: {model.vqvae_model_loaded}")
     trainer.fit(model, train_dataloaders=dataloader)
     print("Training complete.")
