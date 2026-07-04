@@ -24,6 +24,8 @@ from omegaconf import OmegaConf, open_dict
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+DEFAULT_RESULT_DIR = str(Path(__file__).resolve().parents[1] / "out")
+
 from motionbricks.data.training_dataset_factory import (
     build_motion_training_dataloader,
     build_motion_training_dataset,
@@ -69,9 +71,17 @@ def load_config(result_dir: str, max_steps: int):
     return conf, version_dir
 
 
+def _configure_utf8_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+
 def main():
+    _configure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Root model training")
-    parser.add_argument("--result_dir", type=str, default="./out",
+    parser.add_argument("--result_dir", type=str, default=DEFAULT_RESULT_DIR,
                         help="Directory containing pretrained checkpoints")
     parser.add_argument("--max_steps", type=int, default=200,
                         help="Number of training steps")
