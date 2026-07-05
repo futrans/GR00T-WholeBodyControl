@@ -23,9 +23,12 @@ def build_trainer_artifacts(
         return False, False, []
 
     run_path = Path(run_dir)
+    checkpoint_dir = run_path / "checkpoints"
+    run_path.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     logger = csv_logger_cls(save_dir=str(run_path), name="logs", version="")
     checkpoint_callback = checkpoint_cls(
-        dirpath=str(run_path / "checkpoints"),
+        dirpath=str(checkpoint_dir),
         filename="step-{step}",
         save_last=True,
         save_top_k=-1,

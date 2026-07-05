@@ -37,6 +37,13 @@ from motionbricks.helper.pl_util import load_motion_rep
 from motionbricks.training_run_artifacts import build_trainer_artifacts, positive_int
 
 
+def _resolve_motionbricks_root_path(result_dir: str, raw_path: str) -> str:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return str(path)
+    return str(Path(result_dir).parent / path)
+
+
 def load_config(result_dir: str, max_steps: int):
     """Load and patch hparams.yaml for single-GPU training."""
     version_dir = os.path.join(result_dir, "motionbricks_pose", "version_1")
@@ -62,6 +69,11 @@ def load_config(result_dir: str, max_steps: int):
 
         # resolve ${trainer.max_steps} in scheduler
         conf.model.scheduler.num_training_steps = max_steps
+        if "args" in conf.model and "vqvae_model_ckpt_path" in conf.model.args:
+            conf.model.args.vqvae_model_ckpt_path = _resolve_motionbricks_root_path(
+                result_dir,
+                str(conf.model.args.vqvae_model_ckpt_path),
+            )
 
         # remove keys with unresolvable ${hydra:...} interpolations
         conf.id = "synthetic"
