@@ -33,7 +33,7 @@ from motionbricks.data.training_dataset_factory import (
     build_motion_training_dataset,
 )
 from motionbricks.helper.pl_util import load_motion_rep
-from motionbricks.training_run_artifacts import build_trainer_artifacts, parse_wandb_tags, positive_int
+from motionbricks.training_run_artifacts import build_trainer_artifacts, non_negative_int, parse_wandb_tags, positive_int
 
 
 def load_config(result_dir: str, max_steps: int):
@@ -100,6 +100,8 @@ def main():
                         help="Optional directory for CSV logs and checkpoints")
     parser.add_argument("--save_every_n_steps", type=positive_int, default=500,
                         help="Checkpoint interval when --run_dir is set")
+    parser.add_argument("--keep_last_k_checkpoints", type=non_negative_int, default=3,
+                        help="Keep the latest K step checkpoints in addition to last.ckpt when --run_dir is set")
     parser.add_argument("--logger", choices=["none", "csv", "wandb", "both"], default="csv",
                         help="Logger backend when --run_dir is set")
     parser.add_argument("--wandb_project", type=str, default=None)
@@ -163,6 +165,7 @@ def main():
     enable_checkpointing, logger, callbacks = build_trainer_artifacts(
         run_dir=args.run_dir,
         save_every_n_steps=args.save_every_n_steps,
+        keep_last_k_checkpoints=args.keep_last_k_checkpoints,
         csv_logger_cls=CSVLogger,
         checkpoint_cls=ModelCheckpoint,
         logger_mode=args.logger,
@@ -199,6 +202,7 @@ def main():
     if args.run_dir:
         print(f"  Run dir: {args.run_dir}")
         print(f"  Checkpoint interval: {args.save_every_n_steps} steps")
+        print(f"  Keep latest step checkpoints: {args.keep_last_k_checkpoints}")
         print(f"  Logger: {args.logger}")
     print(f"  Dataset size: {len(dataset)}")
     trainer.fit(model, train_dataloaders=dataloader)
