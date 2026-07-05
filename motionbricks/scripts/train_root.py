@@ -20,6 +20,8 @@ from pathlib import Path
 import pytorch_lightning as pl
 from hydra.utils import instantiate
 from omegaconf import OmegaConf, open_dict
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import CSVLogger
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -31,6 +33,7 @@ from motionbricks.data.training_dataset_factory import (
     build_motion_training_dataset,
 )
 from motionbricks.helper.pl_util import load_motion_rep
+from motionbricks.training_run_artifacts import build_trainer_artifacts, positive_int
 
 
 def load_config(result_dir: str, max_steps: int):
@@ -93,6 +96,10 @@ def main():
                         help="MotionBricks packed cache root")
     parser.add_argument("--num_workers", type=int, default=2,
                         help="DataLoader worker count")
+    parser.add_argument("--run_dir", type=str, default=None,
+                        help="Optional directory for CSV logs and checkpoints")
+    parser.add_argument("--save_every_n_steps", type=positive_int, default=500,
+                        help="Checkpoint interval when --run_dir is set")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -145,7 +152,13 @@ def main():
             _recursive_=False,
         )
 
-    # create trainer (no callbacks)
+    enable_checkpointing, logger, callbacks = build_trainer_artifacts(
+        run_dir=args.run_dir,
+        save_every_n_steps=args.save_every_n_steps,
+        csv_logger_cls=CSVLogger,
+        checkpoint_cls=ModelCheckpoint,
+    )
+
     trainer = pl.Trainer(
         max_steps=conf.trainer.max_steps,
         devices=conf.trainer.devices,
@@ -157,8 +170,9 @@ def main():
         enable_progress_bar=conf.trainer.enable_progress_bar,
         log_every_n_steps=conf.trainer.log_every_n_steps,
         num_sanity_val_steps=0,
-        enable_checkpointing=False,
-        logger=False,
+        enable_checkpointing=enable_checkpointing,
+        logger=logger,
+        callbacks=callbacks,
     )
 
     print(f"Starting root model training for {args.max_steps} steps...")
@@ -167,6 +181,9 @@ def main():
     print(f"  Dataset type: {'cached' if args.dataset_cache else 'synthetic'}")
     if args.dataset_cache:
         print(f"  Dataset cache: {args.dataset_cache}")
+    if args.run_dir:
+        print(f"  Run dir: {args.run_dir}")
+        print(f"  Checkpoint interval: {args.save_every_n_steps} steps")
     print(f"  Dataset size: {len(dataset)}")
     trainer.fit(model, train_dataloaders=dataloader)
     print("Training complete.")
