@@ -7,9 +7,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-_CACHE_SCHEMA_VERSION = "motionbricks_bones_seed_g1_packed_cache_v1"
+_CACHE_SCHEMA_VERSION = "motionbricks_bones_seed_g1_packed_cache_v2"
 _FEATURE_DIM = 414
 _QPOS_DIM = 36
+_FULL_STATS_DIM = 418
 
 
 class CachedMotionDataset(Dataset):
@@ -44,6 +45,17 @@ class CachedMotionDataset(Dataset):
             raise ValueError(
                 f"cached motion dim {self.motion.shape[1]} != manifest feature_dim {_FEATURE_DIM}"
             )
+
+        stats_dir = self.cache_root / "stats" / "motion"
+        global_stats_dir = self.cache_root / "stats" / "global_motion"
+        mean = np.load(stats_dir / "mean.npy", mmap_mode="r")
+        std = np.load(stats_dir / "std.npy", mmap_mode="r")
+        global_mean = np.load(global_stats_dir / "mean.npy", mmap_mode="r")
+        global_std = np.load(global_stats_dir / "std.npy", mmap_mode="r")
+        if mean.shape != (_FULL_STATS_DIM,) or std.shape != (_FULL_STATS_DIM,):
+            raise ValueError("cached MotionBricks stats shape mismatch")
+        if global_mean.shape != (_FEATURE_DIM,) or global_std.shape != (_FEATURE_DIM,):
+            raise ValueError("cached global_motion stats shape mismatch")
 
         if int(self.manifest.get("num_sequences", -1)) != len(self.entries):
             raise ValueError("manifest num_sequences mismatch")
