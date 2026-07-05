@@ -4,6 +4,8 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+from pytorch_lightning.callbacks import Callback
+
 
 def positive_int(raw_value: str) -> int:
     value = int(raw_value)
@@ -26,7 +28,7 @@ def non_negative_int(raw_value: str) -> int:
     return value
 
 
-class PruneOldCheckpointsCallback:
+class PruneOldCheckpointsCallback(Callback):
     def __init__(self, *, checkpoint_dir: Path, keep_last_k: int) -> None:
         if keep_last_k < 0:
             raise ValueError("keep_last_k must be >= 0")
