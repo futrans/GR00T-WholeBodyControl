@@ -18,7 +18,7 @@ import pytorch_lightning as pl
 from hydra.utils import instantiate
 from omegaconf import OmegaConf, open_dict
 from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.loggers import CSVLogger, WandbLogger
+from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger, WandbLogger
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -33,8 +33,16 @@ from motionbricks.helper.pl_util import load_motion_rep
 from motionbricks.training_run_artifacts import build_trainer_artifacts, non_negative_int, parse_wandb_tags, positive_int
 
 
-def load_config(result_dir: str, max_steps: int):
-    """Load and patch hparams.yaml for single-GPU training."""
+def load_config(
+    result_dir: str,
+    max_steps: int,
+    *,
+    devices: int = 1,
+    num_nodes: int = 1,
+    accelerator: str = "auto",
+    strategy: str = "auto",
+):
+    """Load and patch hparams.yaml for script-driven training."""
     version_dir = os.path.join(result_dir, "motionbricks_vqvae", "version_1")
     hparams_path = os.path.join(version_dir, "hparams.yaml")
     conf = OmegaConf.load(hparams_path)
@@ -45,12 +53,13 @@ def load_config(result_dir: str, max_steps: int):
         conf.skeleton.folder = os.path.join(version_dir, "skeleton")
         conf.motion_rep.stats.folder = os.path.join(version_dir, "stats", "motion")
 
-        # single-GPU training overrides
-        conf.trainer.devices = 1
-        conf.trainer.num_nodes = 1
+        # Script-level trainer overrides keep local single-GPU runs as the default
+        # while allowing platform jobs to request DDP explicitly.
+        conf.trainer.devices = devices
+        conf.trainer.num_nodes = num_nodes
         conf.trainer.max_steps = max_steps
-        conf.trainer.accelerator = "auto"
-        conf.trainer.strategy = "auto"
+        conf.trainer.accelerator = accelerator
+        conf.trainer.strategy = strategy
         conf.trainer.enable_progress_bar = True
         conf.trainer.log_every_n_steps = 10
         conf.trainer.val_check_interval = max_steps  # no validation
@@ -76,6 +85,14 @@ def main():
                         help="Directory containing pretrained checkpoints")
     parser.add_argument("--max_steps", type=int, default=200,
                         help="Number of training steps")
+    parser.add_argument("--devices", type=positive_int, default=1,
+                        help="Number of GPU devices per node")
+    parser.add_argument("--num_nodes", type=positive_int, default=1,
+                        help="Number of training nodes")
+    parser.add_argument("--accelerator", type=str, default="auto",
+                        help="Lightning accelerator, e.g. auto or gpu")
+    parser.add_argument("--strategy", type=str, default="auto",
+                        help="Lightning strategy, e.g. auto or ddp")
     parser.add_argument("--batch_size", type=int, default=8,
                         help="Batch size")
     parser.add_argument("--num_samples", type=int, default=500,
@@ -90,7 +107,7 @@ def main():
                         help="Checkpoint interval when --run_dir is set")
     parser.add_argument("--keep_last_k_checkpoints", type=non_negative_int, default=3,
                         help="Keep the latest K step checkpoints in addition to last.ckpt when --run_dir is set")
-    parser.add_argument("--logger", choices=["none", "csv", "wandb", "both"], default="csv",
+    parser.add_argument("--logger", choices=["none", "csv", "tensorboard", "tensorboard_csv", "wandb", "both"], default="csv",
                         help="Logger backend when --run_dir is set")
     parser.add_argument("--wandb_project", type=str, default=None)
     parser.add_argument("--wandb_entity", type=str, default=None)
@@ -102,7 +119,14 @@ def main():
     args = parser.parse_args()
 
     pl.seed_everything(args.seed)
-    conf, version_dir = load_config(args.result_dir, args.max_steps)
+    conf, version_dir = load_config(
+        args.result_dir,
+        args.max_steps,
+        devices=args.devices,
+        num_nodes=args.num_nodes,
+        accelerator=args.accelerator,
+        strategy=args.strategy,
+    )
     if args.dataset_cache:
         with open_dict(conf):
             conf.motion_rep.stats.folder = os.path.join(args.dataset_cache, "stats", "motion")
@@ -154,6 +178,7 @@ def main():
         save_every_n_steps=args.save_every_n_steps,
         keep_last_k_checkpoints=args.keep_last_k_checkpoints,
         csv_logger_cls=CSVLogger,
+        tensorboard_logger_cls=TensorBoardLogger,
         checkpoint_cls=ModelCheckpoint,
         logger_mode=args.logger,
         wandb_logger_cls=WandbLogger,
@@ -183,6 +208,10 @@ def main():
     print(f"Starting VQVAE training for {args.max_steps} steps...")
     print(f"  Feature dim: {feat_dim}")
     print(f"  Batch size: {args.batch_size}")
+    print(f"  Trainer devices: {conf.trainer.devices}")
+    print(f"  Trainer num_nodes: {conf.trainer.num_nodes}")
+    print(f"  Trainer accelerator: {conf.trainer.accelerator}")
+    print(f"  Trainer strategy: {conf.trainer.strategy}")
     print(f"  Dataset type: {'cached' if args.dataset_cache else 'synthetic'}")
     if args.dataset_cache:
         print(f"  Dataset cache: {args.dataset_cache}")

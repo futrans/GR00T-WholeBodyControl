@@ -75,6 +75,7 @@ def build_trainer_artifacts(
     checkpoint_cls: type,
     keep_last_k_checkpoints: int = 3,
     logger_mode: str = "csv",
+    tensorboard_logger_cls: type | None = None,
     wandb_logger_cls: type | None = None,
     wandb_project: str | None = None,
     wandb_entity: str | None = None,
@@ -84,8 +85,10 @@ def build_trainer_artifacts(
 ) -> tuple[bool, Any, list[Any]]:
     if not run_dir:
         return False, False, []
-    if logger_mode not in {"none", "csv", "wandb", "both"}:
+    if logger_mode not in {"none", "csv", "tensorboard", "tensorboard_csv", "wandb", "both"}:
         raise ValueError(f"unsupported logger mode: {logger_mode}")
+    if logger_mode in {"tensorboard", "tensorboard_csv"} and tensorboard_logger_cls is None:
+        raise ValueError("tensorboard logger mode requires tensorboard_logger_cls")
     if logger_mode in {"wandb", "both"} and wandb_logger_cls is None:
         raise ValueError("wandb logger mode requires wandb_logger_cls")
 
@@ -94,8 +97,10 @@ def build_trainer_artifacts(
     run_path.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     loggers: list[Any] = []
-    if logger_mode in {"csv", "both"}:
+    if logger_mode in {"csv", "tensorboard_csv", "both"}:
         loggers.append(csv_logger_cls(save_dir=str(run_path), name="logs", version=""))
+    if logger_mode in {"tensorboard", "tensorboard_csv"}:
+        loggers.append(tensorboard_logger_cls(save_dir=str(run_path / "tensorboard"), name="", version=""))
     if logger_mode in {"wandb", "both"}:
         loggers.append(
             wandb_logger_cls(
