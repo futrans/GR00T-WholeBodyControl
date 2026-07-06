@@ -32,6 +32,7 @@
  *   1       | joint_pos, joint_vel             | smpl_joints, smpl_pose
  *   2       | smpl_joints, smpl_pose           | joint_pos, joint_vel
  *   3       | joint_pos, joint_vel, smpl_joints, smpl_pose | —
+ *   5       | joint_pos, joint_vel, body_pos, body_quat, body_lin_vel, body_ang_vel | —
  *
  * ## Optional Fields (all versions)
  *
@@ -84,6 +85,9 @@
  *   OPTIONAL: frame_index, left_hand_joints, right_hand_joints, body_quat_w
  *   STORES:   token_state → external_token_state_ (for policy input)
  *             hand joints → left_hand_joint_/right_hand_joint_ (for robot control)
+ *
+ * Protocol Version 5 streams full-body robot references equivalent to an
+ * offline SONIC reference directory (`joint_pos.csv`, `body_pos.csv`, etc.).
  */
 class ZMQEndpointInterface : public InputInterface {
 public:
@@ -646,7 +650,8 @@ private:
         }
         
         // Find expected fields by name (including frame_index for alignment)
-        int joint_pos_idx = -1, joint_vel_idx = -1, body_quat_idx = -1, frame_index_idx = -1, smpl_joints_idx = -1, smpl_pose_idx = -1;
+        int joint_pos_idx = -1, joint_vel_idx = -1, body_pos_idx = -1, body_quat_idx = -1;
+        int body_lin_vel_idx = -1, body_ang_vel_idx = -1, frame_index_idx = -1, smpl_joints_idx = -1, smpl_pose_idx = -1;
         int left_hand_joints_idx = -1, right_hand_joints_idx = -1, catch_up_idx = -1;
         int token_state_idx = -1;  // Protocol v4: token-only streaming
         int heading_increment_idx = -1;
@@ -658,7 +663,10 @@ private:
             const auto& f = buffered_header_.fields[i];
             if (f.name == "joint_pos") joint_pos_idx = static_cast<int>(i);
             else if (f.name == "joint_vel") joint_vel_idx = static_cast<int>(i);
+            else if (f.name == "body_pos" || f.name == "body_pos_w") body_pos_idx = static_cast<int>(i);
             else if (f.name == "body_quat_w" || f.name == "body_quat") body_quat_idx = static_cast<int>(i);
+            else if (f.name == "body_lin_vel" || f.name == "body_lin_vel_w") body_lin_vel_idx = static_cast<int>(i);
+            else if (f.name == "body_ang_vel" || f.name == "body_ang_vel_w") body_ang_vel_idx = static_cast<int>(i);
             else if (f.name == "frame_index" || f.name == "last_smpl_global_frames") frame_index_idx = static_cast<int>(i);
             else if (f.name == "smpl_joints") smpl_joints_idx = static_cast<int>(i);
             else if (f.name == "smpl_pose") smpl_pose_idx = static_cast<int>(i);
@@ -881,7 +889,16 @@ private:
             return result;
         }
         
-        if (protocol_version == 2 || protocol_version == 3) {
+        if (protocol_version == 5) {
+            if (joint_pos_idx < 0 || joint_vel_idx < 0) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 missing required fields (joint_pos, joint_vel)" << std::endl;
+                return result;
+            }
+            if (body_pos_idx < 0 || body_lin_vel_idx < 0 || body_ang_vel_idx < 0) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 missing required full-body fields (body_pos, body_lin_vel, body_ang_vel)" << std::endl;
+                return result;
+            }
+        } else if (protocol_version == 2 || protocol_version == 3) {
             // Version 2/3: require smpl_joints, smpl_pose (joint_pos/joint_vel optional for v2, required for v3)
             if (smpl_joints_idx < 0) {
                 std::cerr << "[ZMQEndpointInterface] Version " << protocol_version
@@ -919,9 +936,66 @@ private:
         // Determine num_frames and num_joints from available fields
         int num_frames = 0;
         int num_joints = 0;
+        int num_bodies = 0;
+        int num_quat_bodies = 1;
         
         // Get num_frames from the primary required field for each version
-        if (protocol_version == 2 || protocol_version == 3) {
+        if (protocol_version == 5) {
+            const auto& joint_pos_field = buffered_header_.fields[joint_pos_idx];
+            const auto& joint_vel_field = buffered_header_.fields[joint_vel_idx];
+            const auto& body_pos_field = buffered_header_.fields[body_pos_idx];
+            const auto& body_quat_field = buffered_header_.fields[body_quat_idx];
+            const auto& body_lin_vel_field = buffered_header_.fields[body_lin_vel_idx];
+            const auto& body_ang_vel_field = buffered_header_.fields[body_ang_vel_idx];
+
+            if (joint_pos_field.shape.size() != 2 || joint_vel_field.shape.size() != 2) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 expects joint_pos/joint_vel shapes [N, num_joints]" << std::endl;
+                return result;
+            }
+            if (body_pos_field.shape.size() != 3 || body_pos_field.shape[2] != 3) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 expects body_pos shape [N, num_bodies, 3]" << std::endl;
+                return result;
+            }
+            if (body_quat_field.shape.size() != 3 || body_quat_field.shape[2] != 4) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 expects body_quat shape [N, num_bodies, 4]" << std::endl;
+                return result;
+            }
+            if (body_lin_vel_field.shape.size() != 3 || body_lin_vel_field.shape[2] != 3) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 expects body_lin_vel shape [N, num_bodies, 3]" << std::endl;
+                return result;
+            }
+            if (body_ang_vel_field.shape.size() != 3 || body_ang_vel_field.shape[2] != 3) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 expects body_ang_vel shape [N, num_bodies, 3]" << std::endl;
+                return result;
+            }
+
+            num_frames = static_cast<int>(joint_pos_field.shape[0]);
+            num_joints = static_cast<int>(joint_pos_field.shape[1]);
+            num_bodies = static_cast<int>(body_pos_field.shape[1]);
+            num_quat_bodies = static_cast<int>(body_quat_field.shape[1]);
+            if (num_frames <= 0 || num_joints <= 0 || num_bodies <= 0 || num_quat_bodies <= 0) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 has non-positive frame/joint/body dimensions" << std::endl;
+                return result;
+            }
+            if (static_cast<int>(joint_vel_field.shape[0]) != num_frames ||
+                static_cast<int>(joint_vel_field.shape[1]) != num_joints) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 joint_vel shape does not match joint_pos" << std::endl;
+                return result;
+            }
+            if (static_cast<int>(body_pos_field.shape[0]) != num_frames ||
+                static_cast<int>(body_quat_field.shape[0]) != num_frames ||
+                static_cast<int>(body_lin_vel_field.shape[0]) != num_frames ||
+                static_cast<int>(body_ang_vel_field.shape[0]) != num_frames) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 frame count mismatch across full-body fields" << std::endl;
+                return result;
+            }
+            if (num_quat_bodies != num_bodies ||
+                static_cast<int>(body_lin_vel_field.shape[1]) != num_bodies ||
+                static_cast<int>(body_ang_vel_field.shape[1]) != num_bodies) {
+                std::cerr << "[ZMQEndpointInterface] Version 5 body count mismatch across full-body fields" << std::endl;
+                return result;
+            }
+        } else if (protocol_version == 2 || protocol_version == 3) {
             // Version 2/3: Get num_frames from smpl_joints (required)
             const auto& smpl_field = buffered_header_.fields[smpl_joints_idx];
             if (smpl_field.shape.size() < 2) {
@@ -1058,16 +1132,68 @@ private:
             }
         }
         
-        // Decode body quaternions (required for both versions)
+        // Decode body positions and velocities (Protocol v5)
+        std::vector<std::vector<std::array<double, 3>>> decoded_body_pos;
+        std::vector<std::vector<std::array<double, 3>>> decoded_body_lin_vel;
+        std::vector<std::vector<std::array<double, 3>>> decoded_body_ang_vel;
+        bool has_full_body_data = (protocol_version == 5 && num_bodies > 0);
+
+        auto decode_body_vec3_field = [&](int field_idx, const char* field_name) {
+            std::vector<std::vector<std::array<double, 3>>> decoded(num_frames);
+            for (int frame = 0; frame < num_frames; ++frame) {
+                decoded[frame].resize(num_bodies, {0.0, 0.0, 0.0});
+            }
+            const auto& vec_field = buffered_header_.fields[field_idx];
+            const auto& vec_buf = buffered_buffers_[field_idx];
+            int stride = num_bodies * 3;
+            if (vec_field.dtype == "f32") {
+                for (int frame = 0; frame < num_frames; ++frame) {
+                    for (int body = 0; body < num_bodies; ++body) {
+                        for (int xyz = 0; xyz < 3; ++xyz) {
+                            float val;
+                            std::memcpy(&val, vec_buf.data() + (frame * stride + body * 3 + xyz) * sizeof(float), sizeof(float));
+                            if (needs_swap) val = byte_swap(val);
+                            decoded[frame][body][xyz] = static_cast<double>(val);
+                        }
+                    }
+                }
+            } else if (vec_field.dtype == "f64") {
+                for (int frame = 0; frame < num_frames; ++frame) {
+                    for (int body = 0; body < num_bodies; ++body) {
+                        for (int xyz = 0; xyz < 3; ++xyz) {
+                            double val;
+                            std::memcpy(&val, vec_buf.data() + (frame * stride + body * 3 + xyz) * sizeof(double), sizeof(double));
+                            if (needs_swap) val = byte_swap(val);
+                            decoded[frame][body][xyz] = val;
+                        }
+                    }
+                }
+            } else {
+                std::cerr << "[ZMQEndpointInterface] Version 5 unsupported dtype '" << vec_field.dtype
+                          << "' for " << field_name << std::endl;
+                decoded.clear();
+            }
+            return decoded;
+        };
+
+        if (has_full_body_data) {
+            decoded_body_pos = decode_body_vec3_field(body_pos_idx, "body_pos");
+            decoded_body_lin_vel = decode_body_vec3_field(body_lin_vel_idx, "body_lin_vel");
+            decoded_body_ang_vel = decode_body_vec3_field(body_ang_vel_idx, "body_ang_vel");
+            if (decoded_body_pos.empty() || decoded_body_lin_vel.empty() || decoded_body_ang_vel.empty()) {
+                return result;
+            }
+        }
+
+        // Decode body quaternions (required for motion versions)
         // Support shapes: [N, num_quat_bodies, 4] or [N, 4] for single body
         const auto& quat_field = buffered_header_.fields[body_quat_idx];
         const auto& quat_buf = buffered_buffers_[body_quat_idx];
         
         // Determine number of quaternion bodies from shape
-        int num_quat_bodies = 1;
-        if (quat_field.shape.size() == 3) {
+        if (protocol_version != 5 && quat_field.shape.size() == 3) {
             num_quat_bodies = static_cast<int>(quat_field.shape[1]);
-        } else if (quat_field.shape.size() == 2) {
+        } else if (protocol_version != 5 && quat_field.shape.size() == 2) {
             num_quat_bodies = 1;
         }
         
@@ -1581,6 +1707,7 @@ private:
             
             std::cout << "[ZMQEndpointInterface] Decoded data (Version " << protocol_version << ", first " << print_frames << " frames";
             if (has_joint_data) std::cout << ", " << num_joints << " joints";
+            if (has_full_body_data) std::cout << ", " << num_bodies << " bodies";
             if (has_smpl_joints) std::cout << ", " << num_smpl_joints << " smpl_joints";
             if (has_smpl_pose) std::cout << ", " << num_smpl_poses << " smpl_pose";
             std::cout << "):" << std::endl;
@@ -1608,6 +1735,21 @@ private:
                     std::cout << "]";
                 }
                 
+                if (has_full_body_data && frame < static_cast<int>(decoded_body_pos.size())) {
+                    std::cout << ", body_pos: [";
+                    int print_bodies = std::min(2, static_cast<int>(decoded_body_pos[frame].size()));
+                    for (int b = 0; b < print_bodies; ++b) {
+                        if (b > 0) std::cout << "; ";
+                        std::cout << "(";
+                        for (int xyz = 0; xyz < 3; ++xyz) {
+                            if (xyz > 0) std::cout << ", ";
+                            std::cout << std::fixed << std::setprecision(6) << decoded_body_pos[frame][b][xyz];
+                        }
+                        std::cout << ")";
+                    }
+                    std::cout << "]";
+                }
+
                 // Print body_quat (always present)
                 std::cout << ", body_quat: [";
                 int print_quat_bodies = std::min(2, static_cast<int>(decoded_body_quat[frame].size()));
@@ -1681,6 +1823,9 @@ private:
         StreamedMotionMerger::IncomingData incoming_data;
         incoming_data.joint_pos = std::move(decoded_joint_pos);
         incoming_data.joint_vel = std::move(decoded_joint_vel);
+        incoming_data.body_pos = std::move(decoded_body_pos);
+        incoming_data.body_lin_vel = std::move(decoded_body_lin_vel);
+        incoming_data.body_ang_vel = std::move(decoded_body_ang_vel);
         incoming_data.body_quat = std::move(decoded_body_quat);
         incoming_data.smpl_joints = std::move(decoded_smpl_joints);
         incoming_data.smpl_pose = std::move(decoded_smpl_pose);
@@ -1689,6 +1834,7 @@ private:
         incoming_data.catch_up_enabled = catch_up_enabled;
         incoming_data.num_frames = num_frames;
         incoming_data.num_joints = num_joints;
+        incoming_data.num_bodies = num_bodies;
         incoming_data.num_quat_bodies = num_quat_bodies;
         incoming_data.num_smpl_joints = num_smpl_joints;
         incoming_data.num_smpl_poses = num_smpl_poses;
@@ -1703,8 +1849,8 @@ private:
         }
         
         // Convert MergeResult to DecodeResult
-        if (active_protocol_version_ == 1) {
-            merge_result.motion->SetEncodeMode(0);  // Protocol 1: joint-based
+        if (active_protocol_version_ == 1 || active_protocol_version_ == 5) {
+            merge_result.motion->SetEncodeMode(0);  // Protocol 1/5: joint-based robot references
         } else if (active_protocol_version_ == 2 || active_protocol_version_ == 3) {
             // Protocol versions 2 and 3 both use encoder mode 2 (SMPL-based)
             merge_result.motion->SetEncodeMode(2);

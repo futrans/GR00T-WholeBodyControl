@@ -3,7 +3,7 @@
  * @brief Reusable sliding-window merger for streamed motion data.
  *
  * StreamedMotionMerger receives chunks of motion frames (joint positions /
- * velocities, body quaternions, SMPL data) from any streaming source (ZMQ,
+ * velocities, body poses/quaternions/velocities, SMPL data) from any streaming source (ZMQ,
  * ROS2, etc.) and merges them into a single growing MotionSequence using a
  * sliding-window approach.
  *
@@ -68,7 +68,7 @@ public:
     static constexpr int HISTORY_FRAMES = 5;
     /// Maximum tolerated gap (in current-rate frames) before a catch-up reset.
     static constexpr int MAX_GAP_FRAMES = 200;
-    
+
     /// Returned by MergeIncomingData() to communicate what happened.
     struct MergeResult {
         std::shared_ptr<MotionSequence> motion;  ///< Merged motion (nullptr on failure).
@@ -78,37 +78,43 @@ public:
         int frame_step = 1;                       ///< Detected stride between consecutive frame indices.
         int protocol_version = 0;                 ///< Protocol version of the incoming data (1, 2, or 3).
     };
-    
+
     /// All the data needed for one merge operation, decoded by the caller.
     struct IncomingData {
         // -- Joint data (required in v1 & v3, optional in v2) --
         std::vector<std::vector<double>> joint_pos;  ///< [frame][joint] positions (radians).
         std::vector<std::vector<double>> joint_vel;  ///< [frame][joint] velocities (rad/s).
-        
+
+        // -- Full-body robot data (required in v5, optional in older versions) --
+        std::vector<std::vector<std::array<double, 3>>> body_pos;      ///< [frame][body][x,y,z].
+        std::vector<std::vector<std::array<double, 3>>> body_lin_vel;  ///< [frame][body][vx,vy,vz].
+        std::vector<std::vector<std::array<double, 3>>> body_ang_vel;  ///< [frame][body][wx,wy,wz].
+
         // -- Body quaternions (required for all versions) --
         std::vector<std::vector<std::array<double, 4>>> body_quat;  ///< [frame][body][w,x,y,z].
-        
+
         // -- SMPL data (required in v2 & v3, optional in v1) --
         std::vector<std::vector<std::array<double, 3>>> smpl_joints;  ///< [frame][joint][x,y,z].
         std::vector<std::vector<std::array<double, 3>>> smpl_pose;    ///< [frame][pose][axis-angle x,y,z].
-        
+
         std::vector<int64_t> frame_indices;  ///< Monotonic global frame indices (required).
-        
+
         int protocol_version = 1;    ///< Protocol version (1, 2, or 3).
         bool catch_up_enabled = true; ///< true → use MAX_GAP_FRAMES; false → allow infinite delay.
-        
+
         // Derived dimensions (must match the vector sizes above)
         int num_frames = 0;       ///< Number of frames in this chunk.
         int num_joints = 0;       ///< Joints per frame (joint_pos / joint_vel width).
+        int num_bodies = 0;       ///< Bodies per frame (body_pos / body velocities width).
         int num_quat_bodies = 0;  ///< Number of rigid bodies per frame (body_quat width).
         int num_smpl_joints = 0;  ///< SMPL joints per frame.
         int num_smpl_poses = 0;   ///< SMPL pose parameters per frame.
     };
-    
+
     StreamedMotionMerger() {
         Reset();
     }
-    
+
     // Reset the merger state (clear all buffered data)
     void Reset() {
         streamed_motion_ = std::make_shared<MotionSequence>();
@@ -116,38 +122,38 @@ public:
         streamed_motion_->ReserveCapacity(15000, 29, 1, 1, 0, 0);
         stream_window_start_ = 0;
     }
-    
+
     // Main merging method: merge incoming data with existing buffered data
     // Returns MergeResult containing the merged motion and playback adjustments
-    // 
+    //
     // Note: Protocol version validation should be done by the caller before calling this method.
     // The merger doesn't care about protocol versions - it just merges the data.
     MergeResult MergeIncomingData(const IncomingData& data, int current_playback_frame) {
         MergeResult result;
-        
+
         // Validate incoming data
         if (!ValidateIncomingData(data)) {
             std::cerr << "[StreamedMotionMerger] Invalid incoming data" << std::endl;
             return result;
         }
-        
+
         // Extract frame step and validate
         int frame_step = CalculateFrameStep(data.frame_indices);
         int incoming_frame_start = static_cast<int>(data.frame_indices[0]);
         int incoming_frame_end = static_cast<int>(data.frame_indices[data.num_frames - 1]);
-        
+
         if constexpr (DEBUG_LOGGING) {
             std::cout << "[StreamedMotionMerger] Processing " << data.num_frames << " frames, "
-                      << "incoming_frame_start=" << incoming_frame_start 
+                      << "incoming_frame_start=" << incoming_frame_start
                       << ", frame_step=" << frame_step << std::endl;
         }
-        
+
         // Calculate sliding window parameters
         int global_playback_frame = stream_window_start_ + frame_step * std::max(0, current_playback_frame - HISTORY_FRAMES);
         int new_window_start = stream_window_start_;
         int merge_dst_frame = 0;
         bool did_catchup = false;
-        
+
         CalculateSlidingWindow(
             incoming_frame_start,
             incoming_frame_end,
@@ -159,10 +165,10 @@ public:
             merge_dst_frame,
             did_catchup
         );
-        
+
         // Create new motion sequence
         auto new_motion = CreateNewMotion(data);
-        
+
         // Copy old data to fill gap before incoming data
         if (merge_dst_frame > 0) {
             CopyOldDataToNewMotion(
@@ -175,27 +181,27 @@ public:
                 data
             );
         }
-        
+
         // Copy incoming data to new motion
         CopyIncomingDataToMotion(data, new_motion, merge_dst_frame);
-        
+
         // Update total timesteps
         new_motion->timesteps = merge_dst_frame + data.num_frames;
-        
+
         if constexpr (DEBUG_LOGGING) {
-            std::cout << "[StreamedMotionMerger] Merged motion: " << new_motion->timesteps 
+            std::cout << "[StreamedMotionMerger] Merged motion: " << new_motion->timesteps
                       << " frames (copied: " << merge_dst_frame << " + incoming: " << data.num_frames << ")" << std::endl;
         }
-        
+
         // Calculate frame offset adjustment BEFORE updating state
         int old_window_start = stream_window_start_;
         int window_shift_ticks = new_window_start - old_window_start;
         int window_shift = (frame_step > 0) ? (window_shift_ticks / frame_step) : 0;
-        
+
         // Update state
         streamed_motion_ = new_motion;
         stream_window_start_ = new_window_start;
-        
+
         // Build result
         result.motion = new_motion;
         result.window_start = new_window_start;
@@ -203,14 +209,14 @@ public:
         result.did_catchup_reset = did_catchup;
         result.frame_step = frame_step;
         result.protocol_version = data.protocol_version;
-        
+
         return result;
     }
-    
+
 private:
     std::shared_ptr<MotionSequence> streamed_motion_;
     int stream_window_start_ = 0;
-    
+
     // Validate incoming data structure
     bool ValidateIncomingData(const IncomingData& data) const {
         // Check required fields
@@ -218,9 +224,30 @@ private:
             std::cerr << "[StreamedMotionMerger] Missing required fields (body_quat or frame_indices)" << std::endl;
             return false;
         }
-        
+
         // Validate protocol-specific requirements
-        if (data.protocol_version == 3) {
+        if (data.protocol_version == 5) {
+            if (data.joint_pos.empty() || data.joint_vel.empty()) {
+                std::cerr << "[StreamedMotionMerger] Protocol v5 missing joint_pos or joint_vel" << std::endl;
+                return false;
+            }
+            if (data.body_pos.empty() || data.body_quat.empty()) {
+                std::cerr << "[StreamedMotionMerger] Protocol v5 missing body_pos or body_quat" << std::endl;
+                return false;
+            }
+            if (data.num_bodies <= 0 || data.num_quat_bodies <= 0 || data.num_bodies != data.num_quat_bodies) {
+                std::cerr << "[StreamedMotionMerger] Protocol v5 requires matching positive body_pos/body_quat counts" << std::endl;
+                return false;
+            }
+            if (!data.body_lin_vel.empty() && static_cast<int>(data.body_lin_vel.size()) != data.num_frames) {
+                std::cerr << "[StreamedMotionMerger] Protocol v5 body_lin_vel frame count mismatch" << std::endl;
+                return false;
+            }
+            if (!data.body_ang_vel.empty() && static_cast<int>(data.body_ang_vel.size()) != data.num_frames) {
+                std::cerr << "[StreamedMotionMerger] Protocol v5 body_ang_vel frame count mismatch" << std::endl;
+                return false;
+            }
+        } else if (data.protocol_version == 3) {
             // Version 3: requires both SMPL data AND joint data
             if (data.smpl_joints.empty() || data.smpl_pose.empty()) {
                 std::cerr << "[StreamedMotionMerger] Protocol v3 missing smpl_joints or smpl_pose" << std::endl;
@@ -246,10 +273,10 @@ private:
             std::cerr << "[StreamedMotionMerger] Unsupported protocol version: " << data.protocol_version << std::endl;
             return false;
         }
-        
+
         return true;
     }
-    
+
     // Calculate frame step from frame indices
     int CalculateFrameStep(const std::vector<int64_t>& frame_indices) const {
         if (frame_indices.size() < 2) {
@@ -258,7 +285,7 @@ private:
         int64_t step = std::abs(frame_indices[1] - frame_indices[0]);
         return step > 0 ? static_cast<int>(step) : 1;
     }
-    
+
     // Calculate sliding window parameters
     void CalculateSlidingWindow(
         int incoming_frame_start,
@@ -278,12 +305,12 @@ private:
             did_catchup = true;
             return;
         }
-        
+
         // Calculate max gap based on catch_up flag
-        int max_gap_frames = catch_up_enabled 
-            ? (MAX_GAP_FRAMES + HISTORY_FRAMES) 
+        int max_gap_frames = catch_up_enabled
+            ? (MAX_GAP_FRAMES + HISTORY_FRAMES)
             : std::numeric_limits<int>::max();
-        
+
 
         int stream_window_end = stream_window_start_ + frame_step * (streamed_motion_->timesteps - 1);
 
@@ -318,22 +345,22 @@ private:
             did_catchup = true;
             return;
         }
-        
+
         // Tentative window aligned to playback
         int desired_window_start = global_playback_frame;
         int tentative_window_start = std::min(desired_window_start, incoming_frame_start);
         int delta_to_incoming = incoming_frame_start - tentative_window_start;
         int tentative_merge_dst = (frame_step > 0) ? (delta_to_incoming / frame_step) : 0;
-        
+
         // Check for large gap
         bool large_gap_from_old = incoming_frame_start > stream_window_end + frame_step;
-        
+
         if (tentative_merge_dst > max_gap_frames || large_gap_from_old) {
             // Catch-up: reset window to incoming frame
             new_window_start = incoming_frame_start;
             merge_dst_frame = 0;
             did_catchup = true;
-            
+
             if constexpr (DEBUG_LOGGING) {
                 std::cout << "[StreamedMotionMerger] CATCH-UP: gap too large or old data expired" << std::endl;
             }
@@ -343,18 +370,18 @@ private:
             merge_dst_frame = tentative_merge_dst;
         }
     }
-    
+
     // Create new motion sequence with appropriate capacity
     std::shared_ptr<MotionSequence> CreateNewMotion(const IncomingData& data) const {
         auto new_motion = std::make_shared<MotionSequence>();
         new_motion->name = "streamed";
-        
+
         int joints_to_reserve = data.num_joints;
-        int bodies_to_reserve = 1;
+        int bodies_to_reserve = data.num_bodies > 0 ? data.num_bodies : 1;
         int body_quaternions_to_reserve = data.num_quat_bodies;
         int smpl_joints_to_reserve = data.num_smpl_joints;
         int smpl_poses_to_reserve = data.num_smpl_poses;
-        
+
         new_motion->ReserveCapacity(
             15000,
             joints_to_reserve,
@@ -363,13 +390,16 @@ private:
             smpl_joints_to_reserve,
             smpl_poses_to_reserve
         );
-        
-        // Initialize body_part_indexes (typically just root for streaming)
-        new_motion->SetBodyPartIndexes({0});
-        
+
+        if (bodies_to_reserve == 14) {
+            new_motion->SetBodyPartIndexes({0, 4, 10, 18, 5, 11, 19, 9, 16, 22, 28, 17, 23, 29});
+        } else {
+            new_motion->SetBodyPartIndexes({0});
+        }
+
         return new_motion;
     }
-    
+
     // Copy old data to new motion to fill gap before incoming data
     void CopyOldDataToNewMotion(
         std::shared_ptr<MotionSequence> old_motion,
@@ -383,19 +413,19 @@ private:
         if (!old_motion || old_motion->timesteps <= 0) {
             return;
         }
-        
+
         int old_window_end = old_window_start + frame_step * old_motion->timesteps;
-        
+
         // Find overlap between old data and needed range
         int need_start_global = new_window_start;
         int need_end_global = incoming_frame_start;
         int overlap_start_global = std::max(need_start_global, old_window_start);
         int overlap_end_global = std::min(need_end_global, old_window_end);
-        
+
         if (overlap_start_global >= overlap_end_global) {
             return;  // No overlap
         }
-        
+
         // Calculate copy parameters
         int start_offset_old = overlap_start_global - old_window_start;
         int start_offset_new = overlap_start_global - new_window_start;
@@ -403,64 +433,80 @@ private:
         int copy_src_idx = (frame_step > 0) ? (start_offset_old / frame_step) : 0;
         int copy_dst_idx = (frame_step > 0) ? (start_offset_new / frame_step) : 0;
         int copy_count = (frame_step > 0) ? (overlap_span / frame_step) : 0;
-        
+
         if constexpr (DEBUG_LOGGING) {
             std::cout << "[StreamedMotionMerger] Copying old data: "
                       << "global [" << overlap_start_global << ".." << (overlap_end_global-1) << "] → "
                       << "new_motion[" << copy_dst_idx << ".." << (copy_dst_idx + copy_count - 1) << "]" << std::endl;
         }
-        
+
         // Copy joint data if present
         if (data.num_joints > 0 && old_motion->GetNumJoints() > 0) {
             int joints_to_copy = std::min(data.num_joints, old_motion->GetNumJoints());
             for (int i = 0; i < copy_count; ++i) {
                 for (int joint = 0; joint < joints_to_copy; ++joint) {
-                    new_motion->JointPositions(copy_dst_idx + i)[joint] = 
+                    new_motion->JointPositions(copy_dst_idx + i)[joint] =
                         old_motion->JointPositions(copy_src_idx + i)[joint];
-                    new_motion->JointVelocities(copy_dst_idx + i)[joint] = 
+                    new_motion->JointVelocities(copy_dst_idx + i)[joint] =
                         old_motion->JointVelocities(copy_src_idx + i)[joint];
                 }
             }
         }
-        
+
+        // Copy body quaternions
+        int old_bodies = old_motion->GetNumBodies();
+        int bodies_to_copy = std::min(data.num_bodies, old_bodies);
+        for (int i = 0; i < copy_count; ++i) {
+            for (int b = 0; b < bodies_to_copy; ++b) {
+                for (int xyz = 0; xyz < 3; ++xyz) {
+                    new_motion->BodyPositions(copy_dst_idx + i)[b][xyz] =
+                        old_motion->BodyPositions(copy_src_idx + i)[b][xyz];
+                    new_motion->BodyLinVelocities(copy_dst_idx + i)[b][xyz] =
+                        old_motion->BodyLinVelocities(copy_src_idx + i)[b][xyz];
+                    new_motion->BodyAngVelocities(copy_dst_idx + i)[b][xyz] =
+                        old_motion->BodyAngVelocities(copy_src_idx + i)[b][xyz];
+                }
+            }
+        }
+
         // Copy body quaternions
         int old_quat_bodies = old_motion->GetNumBodyQuaternions();
         int quat_bodies_to_copy = std::min(data.num_quat_bodies, old_quat_bodies);
         for (int i = 0; i < copy_count; ++i) {
             for (int b = 0; b < quat_bodies_to_copy; ++b) {
                 for (int q = 0; q < 4; ++q) {
-                    new_motion->BodyQuaternions(copy_dst_idx + i)[b][q] = 
+                    new_motion->BodyQuaternions(copy_dst_idx + i)[b][q] =
                         old_motion->BodyQuaternions(copy_src_idx + i)[b][q];
                 }
             }
         }
-        
+
         // Copy SMPL data if present
         if (data.num_smpl_joints > 0 && old_motion->GetNumSmplJoints() > 0) {
             int smpl_joints_to_copy = std::min(data.num_smpl_joints, old_motion->GetNumSmplJoints());
             for (int i = 0; i < copy_count; ++i) {
                 for (int joint = 0; joint < smpl_joints_to_copy; ++joint) {
                     for (int xyz = 0; xyz < 3; ++xyz) {
-                        new_motion->SmplJoints(copy_dst_idx + i)[joint][xyz] = 
+                        new_motion->SmplJoints(copy_dst_idx + i)[joint][xyz] =
                             old_motion->SmplJoints(copy_src_idx + i)[joint][xyz];
                     }
                 }
             }
         }
-        
+
         if (data.num_smpl_poses > 0 && old_motion->GetNumSmplPoses() > 0) {
             int smpl_poses_to_copy = std::min(data.num_smpl_poses, old_motion->GetNumSmplPoses());
             for (int i = 0; i < copy_count; ++i) {
                 for (int p = 0; p < smpl_poses_to_copy; ++p) {
                     for (int xyz = 0; xyz < 3; ++xyz) {
-                        new_motion->SmplPoses(copy_dst_idx + i)[p][xyz] = 
+                        new_motion->SmplPoses(copy_dst_idx + i)[p][xyz] =
                             old_motion->SmplPoses(copy_src_idx + i)[p][xyz];
                     }
                 }
             }
         }
     }
-    
+
     // Copy incoming data to motion sequence
     void CopyIncomingDataToMotion(
         const IncomingData& data,
@@ -476,35 +522,69 @@ private:
                 }
             }
         }
-        
+
+        // Copy body positions and velocities if present
+        if (!data.body_pos.empty()) {
+            for (int frame = 0; frame < data.num_frames; ++frame) {
+                for (int body = 0; body < data.num_bodies; ++body) {
+                    for (int xyz = 0; xyz < 3; ++xyz) {
+                        motion->BodyPositions(dst_frame_offset + frame)[body][xyz] =
+                            data.body_pos[frame][body][xyz];
+                    }
+                }
+            }
+        }
+
+        if (!data.body_lin_vel.empty()) {
+            for (int frame = 0; frame < data.num_frames; ++frame) {
+                for (int body = 0; body < data.num_bodies; ++body) {
+                    for (int xyz = 0; xyz < 3; ++xyz) {
+                        motion->BodyLinVelocities(dst_frame_offset + frame)[body][xyz] =
+                            data.body_lin_vel[frame][body][xyz];
+                    }
+                }
+            }
+        }
+
+        if (!data.body_ang_vel.empty()) {
+            for (int frame = 0; frame < data.num_frames; ++frame) {
+                for (int body = 0; body < data.num_bodies; ++body) {
+                    for (int xyz = 0; xyz < 3; ++xyz) {
+                        motion->BodyAngVelocities(dst_frame_offset + frame)[body][xyz] =
+                            data.body_ang_vel[frame][body][xyz];
+                    }
+                }
+            }
+        }
+
         // Copy body quaternions (always present)
         for (int frame = 0; frame < data.num_frames; ++frame) {
             for (int body = 0; body < data.num_quat_bodies; ++body) {
                 for (int q = 0; q < 4; ++q) {
-                    motion->BodyQuaternions(dst_frame_offset + frame)[body][q] = 
+                    motion->BodyQuaternions(dst_frame_offset + frame)[body][q] =
                         data.body_quat[frame][body][q];
                 }
             }
         }
-        
+
         // Copy SMPL joints if present
         if (!data.smpl_joints.empty()) {
             for (int frame = 0; frame < data.num_frames; ++frame) {
                 for (int joint = 0; joint < data.num_smpl_joints; ++joint) {
                     for (int xyz = 0; xyz < 3; ++xyz) {
-                        motion->SmplJoints(dst_frame_offset + frame)[joint][xyz] = 
+                        motion->SmplJoints(dst_frame_offset + frame)[joint][xyz] =
                             data.smpl_joints[frame][joint][xyz];
                     }
                 }
             }
         }
-        
+
         // Copy SMPL poses if present
         if (!data.smpl_pose.empty()) {
             for (int frame = 0; frame < data.num_frames; ++frame) {
                 for (int pose = 0; pose < data.num_smpl_poses; ++pose) {
                     for (int xyz = 0; xyz < 3; ++xyz) {
-                        motion->SmplPoses(dst_frame_offset + frame)[pose][xyz] = 
+                        motion->SmplPoses(dst_frame_offset + frame)[pose][xyz] =
                             data.smpl_pose[frame][pose][xyz];
                     }
                 }
@@ -514,4 +594,3 @@ private:
 };
 
 #endif // STREAMED_MOTION_MERGER_HPP
-
