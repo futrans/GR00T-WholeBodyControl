@@ -30,6 +30,7 @@ Thumbs.db
 # artifacts. Re-include only the specific source directories.
 !motionbricks/data/
 !motionbricks/data/**
+motionbricks/data/**/__pycache__/
 !motionbricks/motion_backbone/models/
 !motionbricks/motion_backbone/models/**
 !motionbricks/vqvae/models/

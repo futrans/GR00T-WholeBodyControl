@@ -12,16 +12,23 @@ EXP = [
     "default",
 ][-1]
 
-def get_path_dir(exp):
+def _get_arg_value(args, name, default):
+    if args is None:
+        return default
+    value = getattr(args, name, None)
+    return default if value is None else value
+
+
+def get_path_dir(exp, args=None):
     if exp == "default":
         vqvae_path = 'motionbricks_vqvae'
-        vqvae_ckpt = 'model-step=2000000.ckpt'
+        vqvae_ckpt = _get_arg_value(args, 'vqvae_ckpt', 'model-step=2000000.ckpt')
 
         pose_model_path = 'motionbricks_pose'
-        pose_model_ckpt = 'model-step=2000000.ckpt'
+        pose_model_ckpt = _get_arg_value(args, 'pose_ckpt', 'model-step=2000000.ckpt')
 
         root_model_path = 'motionbricks_root'
-        root_model_ckpt = 'model-step=2000000.ckpt'
+        root_model_ckpt = _get_arg_value(args, 'root_ckpt', 'model-step=2000000.ckpt')
 
     else:
         raise NotImplementedError(f"exp {exp} not implemented.")
@@ -37,13 +44,16 @@ def test(args: argparse.Namespace = None):
         parser.add_argument("--data_root", type=str, default="./datasets")
         parser.add_argument("--explicit_dataset_folder", type=str, default=None)
         parser.add_argument("--EXP", type=str, default=None)
+        parser.add_argument("--vqvae_ckpt", type=str, default=None)
+        parser.add_argument("--pose_ckpt", type=str, default=None)
+        parser.add_argument("--root_ckpt", type=str, default=None)
         args = parser.parse_args()
 
     if getattr(args, 'EXP', None) is not None:
         exp = args.EXP
     else:
         exp = EXP
-    ckpt_info = get_path_dir(exp)
+    ckpt_info = get_path_dir(exp, args=args)
 
     models, confs = {}, {}
     for model_name in ['pose', 'root']:
@@ -63,6 +73,10 @@ def test(args: argparse.Namespace = None):
                     conf.model.args.vqvae_model_ckpt_path = \
                         conf.model.args.vqvae_model_ckpt_path.replace(prefix, f"{args.result_dir}/")
             conf.model.args.vqvae_model_ckpt_path = os.path.abspath(conf.model.args.vqvae_model_ckpt_path)
+            conf.model.args.vqvae_model_ckpt_path = os.path.join(
+                os.path.dirname(conf.model.args.vqvae_model_ckpt_path),
+                ckpt_info['vqvae_ckpt'],
+            )
 
         if args.data_root is not None:
             conf.data_root = args.data_root

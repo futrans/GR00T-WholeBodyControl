@@ -161,6 +161,9 @@ if __name__ == "__main__":
     parser.add_argument("--planner", type=str, default="default")
     parser.add_argument("--allowed_mode", type=str, default=None)
     parser.add_argument("--clips", type=str, default="G1")
+    parser.add_argument("--vqvae_ckpt", type=str, default=None)
+    parser.add_argument("--pose_ckpt", type=str, default=None)
+    parser.add_argument("--root_ckpt", type=str, default=None)
 
     args = parser.parse_args()
 

@@ -44,7 +44,7 @@ def _resolve_motionbricks_root_path(result_dir: str, raw_path: str) -> str:
     return str(Path(result_dir).parent / path)
 
 
-def load_config(result_dir: str, max_steps: int):
+def load_config(result_dir: str, max_steps: int, vqvae_ckpt: str | None = None):
     """Load and patch hparams.yaml for single-GPU training."""
     version_dir = os.path.join(result_dir, "motionbricks_pose", "version_1")
     hparams_path = os.path.join(version_dir, "hparams.yaml")
@@ -70,10 +70,13 @@ def load_config(result_dir: str, max_steps: int):
         # resolve ${trainer.max_steps} in scheduler
         conf.model.scheduler.num_training_steps = max_steps
         if "args" in conf.model and "vqvae_model_ckpt_path" in conf.model.args:
-            conf.model.args.vqvae_model_ckpt_path = _resolve_motionbricks_root_path(
+            vqvae_model_ckpt_path = _resolve_motionbricks_root_path(
                 result_dir,
                 str(conf.model.args.vqvae_model_ckpt_path),
             )
+            if vqvae_ckpt is not None:
+                vqvae_model_ckpt_path = os.path.join(os.path.dirname(vqvae_model_ckpt_path), vqvae_ckpt)
+            conf.model.args.vqvae_model_ckpt_path = vqvae_model_ckpt_path
 
         # remove keys with unresolvable ${hydra:...} interpolations
         conf.id = "synthetic"
@@ -111,6 +114,8 @@ def main():
                         help="DataLoader worker count")
     parser.add_argument("--run_dir", type=str, default=None,
                         help="Optional directory for CSV logs and checkpoints")
+    parser.add_argument("--vqvae_ckpt", type=str, default=None,
+                        help="Optional VQ-VAE checkpoint filename under motionbricks_vqvae/version_1/checkpoints")
     parser.add_argument("--save_every_n_steps", type=positive_int, default=500,
                         help="Checkpoint interval when --run_dir is set")
     parser.add_argument("--keep_last_k_checkpoints", type=non_negative_int, default=3,
@@ -127,7 +132,7 @@ def main():
     args = parser.parse_args()
 
     pl.seed_everything(args.seed)
-    conf, version_dir = load_config(args.result_dir, args.max_steps)
+    conf, version_dir = load_config(args.result_dir, args.max_steps, vqvae_ckpt=args.vqvae_ckpt)
     if args.dataset_cache:
         with open_dict(conf):
             conf.motion_rep.stats.folder = os.path.join(args.dataset_cache, "stats", "motion")
